@@ -1,0 +1,166 @@
+#!/bin/sh
+# alte: another limited text editor :)
+
+trap alte_quit 2
+trap alte_quit 15
+trap alte_resize 28
+
+alte_error() {
+	printf "%s\n%s\n" "error: $1 (exit $2)" "usage: alte FILE_NAME"
+	exit $2
+}
+
+alte_load() {
+	if test -f "$filename"; then
+		cat "$filename" | tr -d '\r' > .alte_$$
+		if test $(cat "$filename" | tr -dc '\r' | wc -c) -ne 0 -o $(cat "$filename" | wc -l) -eq 0
+			then printf "\n" >> .alte_$$
+		fi
+	else printf "\n" > .alte_$$; fi
+	position=1
+	column=1
+	row=1
+}
+
+alte_line_length() {
+	printf "%d" $(($(cat .alte_$$ | head -n $1 | tail -n 1 | wc -c)-1))
+}
+
+alte_print_header() {
+	printf "\033[0m"; clear
+	printf "\033[97;46m\033[K%s\n\033[0m" "$(printf "%s" "alte v$version - $filename - line $row, column $column" | head -c $width)"
+}
+
+alte_show_info() {
+	alte_print_header
+	printf "%s\n" "$1"
+	sleep 2
+}
+
+alte_display() {
+	alte_print_header
+	x=$((column<=width/2||currentline<width ? column : (column>=currentline-width/2 ? width-currentline+column : width/2)))
+	y=$((row<=height/2||linecount<height ? row+1 : (row>=linecount-height/2 ? height-linecount+row+1 : height/2+height%2+1)))
+	cat .alte_$$ | tr '\t' ' ' | head -n $((row<=height/2 ? height : height/2+row)) | tail -n $height | cut -c$((column-x+1))-$((width+column-x+1))
+	printf "\033[${y};${x}H\033[97;100m"
+}
+
+alte_resize() {
+	input="!nothing"
+	width=$(($(stty size | cut -d ' ' -f2)-1))
+	height=$(($(stty size | cut -d ' ' -f1)-2))
+	alte_display
+}
+
+alte_modify_file() {
+	touch .alte_$$_temp
+	if test $position -ne $(($3+1));
+		then cat .alte_$$ | cut -zc -$((position-$3-1)) | tr -d '\0' > .alte_$$_temp
+	fi
+	printf "$1" "$2" >> .alte_$$_temp
+	cat .alte_$$ | cut -zc $position- | tr -d '\0' >> .alte_$$_temp
+	cat .alte_$$_temp > .alte_$$
+	rm -f .alte_$$_temp
+}
+
+alte_quit() {
+	rm -f .alte_$$
+	rm -f .alte_$$_*
+	printf "\033[0m"; clear
+	exit 0
+}
+
+if test $# -eq 0; then alte_error "alte needs a file name" 1; fi
+if ! touch .alte_$$; then alte_error "alte must be able to write in the current folder" 2; fi
+if test -f "$1" -a ! -r "$1"; then alte_error "file $1 cannot be read" 3; fi
+
+filename="$1"
+version="0.1.0"
+lastcommand=""
+
+alte_load
+alte_resize
+while true; do
+	linecount=$(cat .alte_$$ | wc -l)
+	currentline="$(alte_line_length $row)"
+	previousline="$(alte_line_length $((row-1)))"
+
+	alte_display
+	read -r input
+	if test "$input" = ""; then input="$lastcommand"; fi
+	
+	case $input in
+		"!left"|"!del")
+			if test $position -ne 1; then
+				if test $input = "!del"; then alte_modify_file "%s" "" 1; fi
+				position=$((position-1))
+				column=$((column-1))
+				if test $column -eq 0; then
+					row=$((row-1))
+					column=$((previousline+1))
+				fi
+			fi;;
+		"!right")
+			if test $position -ne $(cat .alte_$$ | wc -m); then
+				position=$((position+1))
+				column=$((column+1))
+				if test $column -eq $((currentline+2)); then
+					row=$((row+1))
+					column=1
+				fi
+			fi;;
+		"!up")
+			if test $row -ne 1; then
+				position=$((position - column - previousline))
+				row=$((row-1))
+				column=1
+			fi;;
+		"!down")
+			if test $row -ne $linecount; then
+				position=$((position - column + currentline + 2))
+				row=$((row+1))
+				column=1
+			fi;;
+		"!nl")
+			alte_modify_file "\n" "" 0
+			position=$((position+1))
+			row=$((row+1))
+			column=1;;
+		"!space")
+			alte_modify_file " " "" 0
+			position=$((position+1))
+			column=$((column+1));;
+		"!tab")
+			alte_modify_file "\t" "" 0
+			position=$((position+1))
+			column=$((column+1));;
+		"!save")
+			if touch "$filename" && test -w "$filename"; then
+				cat .alte_$$ > "$filename"
+				alte_show_info "File $filename saved"
+			else alte_show_info "File $filename cannot be saved"; fi
+			input=$lastcommand;;
+		"!reload")
+			if test -r "$filename"; then
+				alte_load
+			else alte_show_info "File $filename cannot be read, and therefore cannot be reloaded"; fi
+			input=$lastcommand;;
+		"!clear")
+			printf '\n' > .alte_$$
+			input=$lastcommand;;
+		"!filename "*)
+			filename="$(printf "%s" "$input" | cut -c11-)"
+			input=$lastcommand;;
+		"!nothing") input=$lastcommand;;
+		"!quit") alte_quit;;
+		"!"[a-z]*)
+			alte_show_info "Command $input not found"
+			input=$lastcommand;;
+		*)
+			alte_modify_file "%s" "$input" 0
+			position=$((position+${#input}))
+			column=$((column+${#input}))
+			input=$lastcommand;;
+	esac
+	lastcommand=$input
+done
